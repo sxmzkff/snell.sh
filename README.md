@@ -192,6 +192,7 @@ HK = snell, 1.2.3.4, 8443, psk = your_psk, version = 5, reuse = true, tfo = true
     - [ShadowTLS](#shadowtls)
   - [Surge 配置文件](#surge-配置文件)
   - [赞助](#赞助)
+  - [开发与分发](#开发与分发)
   - [相关链接](#相关链接)
 
 ---
@@ -882,6 +883,51 @@ https://raw.githubusercontent.com/jinqians/snell.sh/refs/heads/main/surge.conf
 如果这个项目对你有帮助，欢迎点一个 ⭐ Star。
 
 ---
+
+## 开发与分发
+
+### 项目结构
+
+```
+src/
+  lib/common.sh      # 公共函数库（版本比较、下载校验、端口管理等）
+  scripts/           # 各系统安装脚本（仅保留系统差异部分）
+    snell.sh         #   Debian/Ubuntu（apt + systemd）
+    snell-centos.sh  #   CentOS/RHEL（yum + firewalld）
+    snell-alpine.sh  #   Alpine（apk + OpenRC）
+    snell-docker.sh  #   Docker 本地构建
+  docker/            # Dockerfile + entrypoint.sh
+  tools/             # menu.sh / multi-user.sh / shadowtls.sh / bbr.sh
+dist/                # 构建产物（./build.sh 生成，不入库）
+tests/               # 单元测试（./tests/run.sh）
+```
+
+`./build.sh` 把 `src/lib/common.sh` 内联到各脚本的 `### @include` 标记处，
+产出 `dist/` 下的单文件脚本。用户侧无感知：下载 URL 不变，拿到的仍是零依赖单文件。
+
+### 分发链接重定向映射
+
+重构后以下链接的**目标内容**发生变化，需要重定向（或更新指向）：
+
+| 用途 | 旧链接（重构前） | 新链接（重构后） | 控制方 | 状态 |
+|---|---|---|---|---|
+| 一键安装入口 | `https://install.jinqians.com` | 内容不变（仍指向 install.sh） | 上游作者 | 无需改动 |
+| Debian 脚本分发 | `https://snell.jinqians.com` | 需指向 `dist/snell.sh` 构建产物 | 上游作者 | **需上游配合** |
+| CentOS 脚本分发 | `https://snell-centos.jinqians.com` | 需指向 `dist/snell-centos.sh` 构建产物 | 上游作者 | **需上游配合** |
+| Alpine 脚本分发 | `https://snell-alpine.jinqians.com` | 需指向 `dist/snell-alpine.sh` 构建产物 | 上游作者 | **需上游配合** |
+| Docker 脚本分发 | `https://snell-docker.jinqians.com` | 需指向 `dist/snell-docker.sh` 构建产物 | 上游作者 | **需上游配合** |
+| 脚本自我更新 | `raw.githubusercontent.com/jinqians/snell.sh/main/snell.sh` | `.../main/dist/snell.sh`（`SCRIPT_SELF_URL`） | 仓库 | 已在代码中预留变量 |
+| 工具脚本下载 | `raw.githubusercontent.com/jinqians/snell.sh/main/{menu,multi-user,shadowtls,bbr}.sh` | `.../main/src/tools/*.sh` | 仓库 | 需同步更新引用 |
+
+**说明：**
+
+- `*.jinqians.com` 短链接由上游作者的服务器控制，本仓库无法直接修改。重构合并后需作者将其重定向到 `dist/` 构建产物，或改由 GitHub Release 附件分发。
+- 本 fork 的临时分发地址（重构验证用）：
+  `https://raw.githubusercontent.com/sxmzkff/snell.sh/refactor/structure/dist/snell.sh`
+- 以下链接与本次重构无关，无需改动：
+  - `https://psm.jinqians.com`（PSM 独立项目）
+  - `https://jinqians.com`（作者主页）
+  - `https://vps.jinqians.com/*`（赞助商/VPS 测评）
 
 ## 相关链接
 
