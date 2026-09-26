@@ -13,6 +13,9 @@ CYAN='\033[0;36m'
 BLUE='\033[0;34m'
 RESET='\033[0m'
 
+### @include ../lib/common.sh
+SCRIPT_SELF_URL="https://raw.githubusercontent.com/jinqians/snell.sh/main/snell-alpine.sh"
+
 # --- 脚本版本号 ---
 current_version="2.4"
 
@@ -40,46 +43,7 @@ OPENRC_SERVICE_FILE="/etc/init.d/snell"
 
 # --- 基础函数 ---
 
-# 查询 IP 所属国家代码（多接口回退，避免单一接口限流返回错误信息）
-get_ip_country() {
-    local target="$1"
-    local api=""
-    local raw=""
-    local result=""
 
-    if [ -z "$target" ]; then
-        echo "Unknown"
-        return 1
-    fi
-
-    for api in "http://ipinfo.io/${target}/country" \
-               "http://ip-api.com/line/${target}?fields=countryCode" \
-               "https://ipwho.is/${target}?fields=country_code" \
-               "https://ipapi.co/${target}/country/"; do
-        raw=$(curl -s --connect-timeout 5 --max-time 10 "$api" 2>/dev/null)
-        result=$(echo "$raw" | tr -d ' \t\r\n')
-        case "$result" in
-            [A-Za-z][A-Za-z]) ;;
-            *) result=$(echo "$raw" | sed -n 's/.*"country_code"[[:space:]]*:[[:space:]]*"\([A-Za-z][A-Za-z]\)".*/\1/p' | head -n 1) ;;
-        esac
-        case "$result" in
-            [A-Za-z][A-Za-z])
-                echo "$result" | tr '[:lower:]' '[:upper:]'
-                return 0
-                ;;
-        esac
-    done
-
-    echo "Unknown"
-    return 1
-}
-
-check_root() {
-    if [ "$(id -u)" != "0" ]; then
-        echo -e "${RED}错误: 请以 root 权限运行此脚本。${RESET}"
-        exit 1
-    fi
-}
 
 check_system() {
     if [ ! -f /etc/alpine-release ]; then
@@ -197,43 +161,6 @@ select_snell_version() {
     done
 }
 
-# === Snell v6 参数选择（POSIX sh 写法）===
-# 加密模式 (mode)：客户端必须配置完全相同的值，否则无法连接
-select_snell_v6_mode() {
-    echo -e "\n${CYAN}=== Snell v6 加密模式 (mode) ===${RESET}"
-    echo -e "${YELLOW}客户端必须配置与服务端完全相同的 mode，不一致将无法连接${RESET}\n"
-    echo -e "${GREEN}1.${RESET} default     流量混淆 + AES 加密"
-    echo -e "   特征伪装最完整，抗识别与抗封锁能力最强"
-    echo -e "   ${CYAN}建议：绝大多数用户、线路存在干扰或 QoS 时选此项${RESET}"
-    echo -e "${GREEN}2.${RESET} unshaped    关闭混淆，仅 AES 加密"
-    echo -e "   吞吐相比 default 提升约 10%，但流量特征更明显"
-    echo -e "   ${CYAN}建议：线路干净、以速度为先，或已叠加 ShadowTLS 等外层伪装时选此项${RESET}"
-    echo -e "${GREEN}3.${RESET} unsafe-raw  明文转发，不加密不混淆"
-    echo -e "   ${RED}数据可被完整还原，公网环境切勿使用${RESET}"
-    echo -e "   ${CYAN}建议：仅用于内网或完全可信链路的性能测试${RESET}\n"
-
-    while true; do
-        printf "请选择加密模式 [1-3]（回车使用 1）: "
-        read -r mode_choice
-        [ -z "$mode_choice" ] && mode_choice="1"
-        case "$mode_choice" in
-            1) SNELL_MODE="default";  break ;;
-            2) SNELL_MODE="unshaped"; break ;;
-            3)
-                SNELL_MODE="unsafe-raw"
-                echo -e "${RED}警告：unsafe-raw 为明文传输，请确认该链路完全可信！${RESET}"
-                printf "确认使用 unsafe-raw? [y/N]: "
-                read -r raw_confirm
-                case "$raw_confirm" in
-                    [yY]|[yY][eE][sS]) break ;;
-                    *) echo -e "${CYAN}已取消，请重新选择${RESET}" ;;
-                esac
-                ;;
-            *) echo -e "${RED}请输入正确的选项 [1-3]${RESET}" ;;
-        esac
-    done
-    echo -e "${GREEN}已选择 mode = ${SNELL_MODE}${RESET}"
-}
 
 # DNS 解析地址族偏好 (dns-ip-preference)：影响服务端解析目标域名后用哪种地址出站
 select_snell_v6_dns_preference() {
@@ -280,92 +207,13 @@ configure_snell_v6_options() {
 SNELL_RELEASE_NOTES_URL="https://kb.nssurge.com/surge-knowledge-base/release-notes/snell"
 SNELL_RELEASE_NOTES_URL_ZH="https://kb.nssurge.com/surge-knowledge-base/zh/release-notes/snell"
 
-# 抓取官方发布页内容
-fetch_snell_release_notes() {
-    notes=$(curl -s --max-time 15 "$SNELL_RELEASE_NOTES_URL")
-    if [ -z "$notes" ]; then
-        notes=$(curl -s --max-time 15 "$SNELL_RELEASE_NOTES_URL_ZH")
-    fi
-    echo "$notes"
-}
 
-# 把版本号转成定长可排序键，排序优先级：beta < rc < 正式版
-snell_version_sort_key() {
-    echo "${1#v}" | awk '{
-        ver = $0
-        suffix = ""
-        if (match(ver, /[a-zA-Z]+[0-9]*$/)) {
-            suffix = tolower(substr(ver, RSTART))
-            ver = substr(ver, 1, RSTART - 1)
-        }
-        split(ver, part, ".")
-        stage = 3
-        seq = 0
-        if (suffix != "") {
-            stage = (suffix ~ /^rc/) ? 2 : 1
-            digits = suffix
-            gsub(/[^0-9]/, "", digits)
-            if (digits != "") seq = digits + 0
-        }
-        printf "%03d.%03d.%03d.%d.%04d", part[1], part[2], part[3], stage, seq
-    }'
-}
 
-# 从发布页中挑出指定大版本的最新版本（页面上的先后顺序不代表新旧，必须排序）
-pick_latest_snell_version() {
-    major="$1"
-    notes="$2"
 
-    echo "$notes" \
-        | grep -oE "snell-server-v${major}\.[0-9]+\.[0-9]+[a-zA-Z0-9]*" \
-        | sed 's/^snell-server-v//' \
-        | sort -u \
-        | while read -r ver; do
-              echo "$(snell_version_sort_key "$ver") ${ver}"
-          done \
-        | sort \
-        | tail -n 1 \
-        | awk '{print $2}'
-}
 
-get_latest_snell_v4_version() {
-    ver=$(pick_latest_snell_version 4 "$(fetch_snell_release_notes)")
-    if [ -n "$ver" ]; then echo "v${ver}"; else echo "${SNELL_V4_FALLBACK}"; fi
-}
 
-get_latest_snell_v5_version() {
-    ver=$(pick_latest_snell_version 5 "$(fetch_snell_release_notes)")
-    if [ -n "$ver" ]; then echo "v${ver}"; else echo "${SNELL_V5_FALLBACK}"; fi
-}
 
-get_latest_snell_v6_version() {
-    ver=$(pick_latest_snell_version 6 "$(fetch_snell_release_notes)")
-    if [ -n "$ver" ]; then echo "v${ver}"; else echo "${SNELL_V6_FALLBACK}"; fi
-}
 
-get_latest_snell_version() {
-    if [ "$SNELL_VERSION_CHOICE" = "v6" ]; then SNELL_VERSION=$(get_latest_snell_v6_version);
-    elif [ "$SNELL_VERSION_CHOICE" = "v5" ]; then SNELL_VERSION=$(get_latest_snell_v5_version);
-    else SNELL_VERSION=$(get_latest_snell_v4_version); fi
-    echo -e "${GREEN}获取到版本: ${SNELL_VERSION}${RESET}"
-}
-
-get_snell_download_url() {
-    local arch=$(uname -m)
-    local arch_suffix=""
-    case ${arch} in
-        "x86_64"|"amd64") arch_suffix="amd64" ;;
-        "aarch64"|"arm64") arch_suffix="aarch64" ;;
-        "armv7l"|"armv7")
-            if [ "$SNELL_VERSION_CHOICE" = "v6" ]; then
-                echo -e "${RED}Snell v6 暂不支持 armv7l 架构${RESET}" >&2
-                exit 1
-            fi
-            arch_suffix="armv7l" ;;
-        *) echo -e "${RED}不支持的架构: ${arch}${RESET}" >&2; exit 1 ;;
-    esac
-    echo "https://dl.nssurge.com/snell/snell-server-${SNELL_VERSION}-linux-${arch_suffix}.zip"
-}
 
 get_user_port() {
     while true; do
@@ -395,64 +243,6 @@ save_nftables_rules() {
     fi
 }
 
-open_nftables_port() {
-    local port=$1
-    local chains
-    local chain_opened=false
-
-    if ! command -v nft >/dev/null 2>&1; then
-        return
-    fi
-
-    echo -e "${CYAN}正在配置防火墙 (nftables)...${RESET}"
-
-    chains=$(nft -a list ruleset 2>/dev/null | awk '
-        $1 == "table" {
-            family=$2
-            table=$3
-            gsub(/[{}]/, "", table)
-        }
-        $1 == "chain" {
-            chain=$2
-            gsub(/[{}]/, "", chain)
-            in_chain=1
-            next
-        }
-        in_chain && /type filter/ && /hook input/ {
-            print family " " table " " chain
-        }
-        in_chain && /^[[:space:]]*}/ {
-            in_chain=0
-        }
-    ')
-
-    while read -r family table chain; do
-        [ -z "$family" ] && continue
-
-        if ! nft list chain "$family" "$table" "$chain" 2>/dev/null | grep -q "tcp dport $port .*accept"; then
-            nft insert rule "$family" "$table" "$chain" tcp dport "$port" accept 2>/dev/null || true
-        fi
-        if ! nft list chain "$family" "$table" "$chain" 2>/dev/null | grep -q "udp dport $port .*accept"; then
-            nft insert rule "$family" "$table" "$chain" udp dport "$port" accept 2>/dev/null || true
-        fi
-        chain_opened=true
-    done << EOF
-$chains
-EOF
-
-    if [ "$chain_opened" = false ]; then
-        nft add table inet snell_filter 2>/dev/null || true
-        nft list chain inet snell_filter input >/dev/null 2>&1 || nft add chain inet snell_filter input '{ type filter hook input priority -5; policy accept; }'
-        if ! nft list chain inet snell_filter input 2>/dev/null | grep -q "tcp dport $port .*accept"; then
-            nft add rule inet snell_filter input tcp dport "$port" accept 2>/dev/null || true
-        fi
-        if ! nft list chain inet snell_filter input 2>/dev/null | grep -q "udp dport $port .*accept"; then
-            nft add rule inet snell_filter input udp dport "$port" accept 2>/dev/null || true
-        fi
-    fi
-
-    save_nftables_rules
-}
 
 open_port() {
     local port=$1
